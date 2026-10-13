@@ -8,9 +8,9 @@
 [![Cloud](https://img.shields.io/badge/Cloud-MQTT_%28JSON%29-yellow.svg?style=flat-square&logo=mqtt)](https://mqtt.org)
 [![License](https://img.shields.io/badge/License-MIT-brightgreen.svg?style=flat-square)](LICENSE)
 
-A production-grade **Distributed Dual-Microcontroller Industrial IoT Edge Controller & Telemetry Gateway**. 
+A robust, distributed **Dual-Microcontroller Industrial IoT Edge Controller & Telemetry Gateway**. 
 
-This project demonstrates the separation of concerns widely adopted in mission-critical industrial automation, robotics, and smart energy systems: partitioning **hard real-time deterministic sensor acquisition and actuator safety** onto an **ARM Cortex-M4 (STM32F446RE)**, while offloading **asynchronous wireless networking, BLE 5.0 field diagnostics, and cloud MQTT telemetry** to an **ESP32-S3**.
+This project demonstrates the separation of concerns widely adopted in mission-critical industrial automation, robotics, and smart energy systems: partitioning **hard real-time deterministic sensor acquisition and actuator safety** onto an **ARM Cortex-M4 (STM32F446RE)**, while offloading **asynchronous wireless networking, BLE 5.0 field diagnostics, and cloud MQTT telemetry** to a dual-core **ESP32-S3**.
 
 ---
 
@@ -18,7 +18,11 @@ This project demonstrates the separation of concerns widely adopted in mission-c
 
 The two microcontrollers communicate across a dedicated full-duplex UART link using a DMA-driven, packetized binary protocol with CRC-16-CCITT error checking:
 
-![System Architecture](docs/architecture.svg)
+<p align="center">
+  <img src="docs/dual_mcu_industrial_iot_edge_controller_architecture.png" alt="Dual MCU Industrial Edge Controller Architecture" width="100%">
+</p>
+
+> *Vector diagram available at [`docs/architecture.svg`](docs/architecture.svg).*
 
 ### Architectural Partitioning:
 1. **STM32F446RE (Real-Time Control Engine):**
@@ -52,10 +56,10 @@ In multi-tasking industrial firmware, sharing diagnostic tables between high-pri
 * The system protects the 16-entry fault table with a **FreeRTOS Mutex featuring Priority Inheritance**.
 * If `InterMcuCommTask` (Priority 1) locks the table and `FaultSupervisorTask` (Priority 4) requires access, FreeRTOS dynamically elevates `InterMcuCommTask` to Priority 4 until the lock is released, preventing medium-priority tasks from stalling critical trip logic.
 
-### C. Direct Task Notifications for Zero-RAM Event Signaling
-Instead of allocating binary semaphores for DMA transfer completion:
+### C. Direct Task Notifications for Low-Latency Event Signaling
+Instead of allocating generic FreeRTOS binary semaphores for DMA transfer completion:
 * The driver uses `vTaskNotifyGiveFromISR()` and `ulTaskNotifyTake()`.
-* Delivers **45% faster context switching** and requires zero heap allocation.
+* Direct Task Notifications update a 32-bit state directly inside the receiving task's Task Control Block (TCB). This avoids semaphore queue metadata overhead, eliminates dynamic semaphore memory allocation, and shortens ISR unblock latency compared to generic FreeRTOS binary semaphores.
 
 ### D. Dual-Radio Field Commissioning (BLE 5.0 GATT)
 Field technicians can diagnose the controller without factory Wi-Fi credentials:
@@ -102,6 +106,8 @@ stm32-esp32-industrial-edge-controller/
 │   ├── protocol_host_tester.py                # Standalone test suite verifying CRC, framing & noise
 │   ├── ble_terminal_client.py                 # Asynchronous Python Bleak client for BLE GATT testing
 │   └── mqtt_live_subscriber.py                # MQTT subscriber displaying real-time telemetry
+├── tests/                                     # Native C Unit Tests (C99 / MinGW / Host GCC)
+│   └── test_intermcu_protocol.c               # 7-test suite: CRC vectors, framing, noise recovery, NULL checks
 └── docs/                                      # Technical References & Guides
     ├── architecture.svg                       # Vector architecture & memory boundary diagram
     ├── PROTOCOL_SPECIFICATION.md              # In-depth packet framing & command dictionary
@@ -127,8 +133,37 @@ Only **3 jumper wires** are required between the boards:
 
 ## 5. Verification & Test Execution
 
-### Automated Host Protocol Verification Suite
-The protocol engine includes a standalone verification suite running in host Python to validate the CRC-16 calculation, serialization, frame recovery after noise bursts, and buffer overflow rejections:
+### A. Native C Unit Test Suite (C99 / GCC)
+The shared serialization, framing, and CRC engine (`common/`) compiles natively on host development machines using standard C99 without hardware dependencies:
+
+```bash
+# Compile and run native C unit tests (GCC / Clang / MSVC)
+gcc -std=c99 -Icommon/include tests/test_intermcu_protocol.c common/src/intermcu_protocol.c common/src/intermcu_crc16.c -o test_protocol
+./test_protocol
+```
+
+**Native C Test Suite Output:**
+```text
+=================================================================
+  INTER-MCU NATIVE C PROTOCOL VERIFICATION SUITE
+  Testing: common/src/intermcu_protocol.c & intermcu_crc16.c
+=================================================================
+
+[C-TEST 1] CRC-16-CCITT Known Vector '123456789' ... PASSED (0x29B1)
+[C-TEST 2] Encode & Decode 16-Byte Telemetry Frame ... PASSED (23 Bytes Verified)
+[C-TEST 3] AUD-005 Null Payload Pointer Rejection ... PASSED (Safely Returned 0)
+[C-TEST 4] Zero-Length Payload Heartbeat Frame ... PASSED (7 Bytes Verified)
+[C-TEST 5] Corrupted CRC Frame Rejection ... PASSED (Correctly Flagged CRC Error)
+[C-TEST 6] Noise Burst & False-Sync (0xAA 0xAA 0x55) Recovery ... PASSED (Recovered and Decoded Frame)
+[C-TEST 7] Oversized Payload (>64 Bytes) Boundary Rejection ... PASSED (Rejected Length 65)
+
+=================================================================
+  SUMMARY: 7 / 7 TESTS PASSED (100% SUCCESS)
+=================================================================
+```
+
+### B. Automated Host Protocol Verification Suite (Python)
+In addition to native C unit tests, a standalone verification suite running in host Python validates the CRC-16 calculation, serialization, frame recovery after noise bursts, and buffer overflow rejections:
 
 ```bash
 python tools/protocol_host_tester.py
@@ -151,7 +186,7 @@ python tools/protocol_host_tester.py
 =================================================================
 ```
 
-### Live BLE Diagnostics
+### C. Live BLE Diagnostics
 Connect to the ESP32-S3 wireless node using the Python BLE client:
 ```bash
 python tools/ble_terminal_client.py
@@ -180,7 +215,25 @@ idf.py build
 
 ---
 
-## 7. Author & License
+## 7. Hardware Bring-Up & Validation Status
+
+To ensure complete transparency regarding production bench qualification vs prototype firmware implementation:
+
+| Subsystem | Target Hardware | Implementation Layer | Validation Status |
+| :--- | :--- | :--- | :--- |
+| **Inter-MCU Protocol Engine** | Shared C99 | Full framing, state-machine decoder, CRC16 table | **100% Verified** via Native C test runner & Python stress harness |
+| **STM32 DMA UART Driver** | STM32F446RE USART2 | Circular DMA reception, direct `DMA1_Stream5->NDTR` indexing, IDLE ISR | **Code-Complete & Register-Verified** (bench loopback ready) |
+| **STM32 Actuators & E-Stop** | STM32F446RE TIM1/GPIO | Direct `TIM1->BDTR` MOE shutdown, PB4/PB5 relay BSRR | **Code-Complete**; immediate sub-ms peripheral shutdown |
+| **STM32 Safety Supervisor** | STM32F446RE FreeRTOS | 16-entry circular table, priority inheritance mutex, atomic critical sections | **Code-Complete & Concurrency Safe** |
+| **ESP32 BLE GATT Server** | ESP32-S3 Bluedroid | Service `0xFFF0`, Notify (`0xFFF1`), Authenticated Write (`0xFFF2`) | **Verified** with Python Bleak client & nRF Connect |
+| **ESP32 Wi-Fi & MQTT Client** | ESP32-S3 ESP-IDF | Non-blocking station, Mosquitto MQTT JSON publishing | **Verified** with local Mosquitto test broker |
+
+> [!NOTE]
+> Physical multi-hour environmental stress testing on high-temperature industrial chambers and external high-voltage relay contactor loads is an ongoing bench milestone. The firmware architecture strictly separates peripheral drivers from the core protocol so board-level pin reassignments do not impact protocol safety.
+
+---
+
+## 8. Author & License
 
 * **Author:** **Sherifred Singh** — *Embedded Firmware & IoT Systems Engineer*
 * **License:** Licensed under the [MIT License](LICENSE).

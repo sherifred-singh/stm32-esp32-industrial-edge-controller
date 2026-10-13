@@ -24,6 +24,7 @@ size_t intermcu_encode_frame(uint8_t msg_type,
 {
     if (!out_buffer) return 0;
     if (payload_len > INTERMCU_MAX_PAYLOAD_SIZE) return 0;
+    if (payload_len > 0 && payload == NULL) return 0;
 
     size_t total_size = INTERMCU_HEADER_SIZE + payload_len + INTERMCU_CRC_SIZE;
     if (max_buffer_len < total_size) return 0;

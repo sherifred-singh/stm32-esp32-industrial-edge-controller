@@ -4,6 +4,7 @@ build/
 *.elf
 *.bin
 *.hex
+*.exe
 *.map
 *.lst
 *.d

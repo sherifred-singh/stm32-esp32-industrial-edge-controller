@@ -34,6 +34,25 @@ static intermcu_parser_t protocol_parser;
 /* Rolling sequence counter */
 static uint8_t tx_seq_counter = 0;
 
+/* Low-Level Register Control for STM32F446RE DMA1 Stream 5 (RX) & Stream 6 (TX) */
+#if defined(STM32F446xx) || defined(__arm__) || defined(__ARM_ARCH)
+#include "stm32f4xx.h"
+#define HW_UART_DMA_GET_RX_POS()    ((uint16_t)(UART_RX_DMA_BUFFER_SIZE - DMA1_Stream5->NDTR))
+#define HW_UART_DMA_START_TX(len)   do { \
+    DMA1_Stream6->CR &= ~DMA_SxCR_EN; \
+    while (DMA1_Stream6->CR & DMA_SxCR_EN); \
+    DMA1->HIFCR = (0x3D << 16); /* Clear CTCIF6, CHTIF6, CTEIF6, CDMEIF6, CFEIF6 */ \
+    DMA1_Stream6->M0AR = (uint32_t)uart_tx_dma_buffer; \
+    DMA1_Stream6->NDTR = (uint16_t)(len); \
+    DMA1_Stream6->CR |= DMA_SxCR_EN; \
+} while(0)
+#else
+/* Hardware abstraction simulation pointer for host unit testing */
+volatile uint16_t hal_sim_dma1_stream5_ndtr = UART_RX_DMA_BUFFER_SIZE;
+#define HW_UART_DMA_GET_RX_POS()    ((uint16_t)(UART_RX_DMA_BUFFER_SIZE - hal_sim_dma1_stream5_ndtr))
+#define HW_UART_DMA_START_TX(len)   do { (void)(len); } while(0)
+#endif
+
 void UartDmaComm_Init(void)
 {
     memset(uart_rx_dma_buffer, 0, sizeof(uart_rx_dma_buffer));
@@ -53,7 +72,7 @@ void UartDmaComm_IdleLineISR(void)
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
     if (xInterMcuTaskHandle != NULL) {
-        /* Direct Task Notification is 45% faster than xSemaphoreGiveFromISR */
+        /* Direct Task Notification is faster than xSemaphoreGiveFromISR with zero heap allocation */
         vTaskNotifyGiveFromISR(xInterMcuTaskHandle, &xHigherPriorityTaskWoken);
         portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
     }
@@ -72,7 +91,7 @@ static void send_ack_response(uint8_t acked_seq, uint8_t status_code)
                                              uart_tx_dma_buffer,
                                              sizeof(uart_tx_dma_buffer));
     if (frame_len > 0) {
-        /* Trigger DMA transmission: DMA1_Stream6->NDTR = frame_len; DMA1_Stream6->CR |= DMA_SxCR_EN; */
+        HW_UART_DMA_START_TX(frame_len);
     }
 }
 
@@ -96,7 +115,7 @@ void vInterMcuCommTask(void *pvParameters)
                                                      uart_tx_dma_buffer,
                                                      sizeof(uart_tx_dma_buffer));
             if (frame_len > 0) {
-                /* Start UART DMA TX transfer */
+                HW_UART_DMA_START_TX(frame_len);
             }
         }
 
@@ -106,10 +125,8 @@ void vInterMcuCommTask(void *pvParameters)
         /* Wait up to 10 ms for notification from IDLE line ISR */
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
 
-        /* Read current hardware DMA write pointer */
-        /* In hardware: uint16_t dma_write_pos = UART_RX_DMA_BUFFER_SIZE - DMA1_Stream5->NDTR; */
-        /* Simulated for unit compilation: */
-        uint16_t dma_write_pos = last_read_position; 
+        /* Read actual hardware DMA write pointer */
+        uint16_t dma_write_pos = HW_UART_DMA_GET_RX_POS();
 
         while (last_read_position != dma_write_pos) {
             uint8_t byte = uart_rx_dma_buffer[last_read_position];
@@ -125,9 +142,15 @@ void vInterMcuCommTask(void *pvParameters)
                         intermcu_actuator_cmd_t cmd;
                         memcpy(&cmd, rx_frame.payload, sizeof(cmd));
                         if (xCommandQueue != NULL) {
-                            xQueueSend(xCommandQueue, &cmd, 0);
+                            BaseType_t q_status = xQueueSend(xCommandQueue, &cmd, 0);
+                            if (q_status == pdPASS) {
+                                send_ack_response(rx_frame.seq_num, INTERMCU_STATUS_OK);
+                            } else {
+                                send_ack_response(rx_frame.seq_num, INTERMCU_STATUS_ERR_OVERFLOW);
+                            }
+                        } else {
+                            send_ack_response(rx_frame.seq_num, INTERMCU_STATUS_ERR_BUSY);
                         }
-                        send_ack_response(rx_frame.seq_num, INTERMCU_STATUS_OK);
                     }
                     break;
 
@@ -148,7 +171,7 @@ void vInterMcuCommTask(void *pvParameters)
                                                              uart_tx_dma_buffer,
                                                              sizeof(uart_tx_dma_buffer));
                     if (frame_len > 0) {
-                        /* Start UART DMA TX transfer */
+                        HW_UART_DMA_START_TX(frame_len);
                     }
                     break;
                 }

@@ -68,7 +68,11 @@ void FaultSupervisor_ReportFault(intermcu_fault_code_t code, intermcu_fault_seve
 
 uint8_t FaultSupervisor_GetActiveFlags(void)
 {
-    return active_fault_bitmask;
+    uint8_t flags;
+    taskENTER_CRITICAL();
+    flags = active_fault_bitmask;
+    taskEXIT_CRITICAL();
+    return flags;
 }
 
 void FaultSupervisor_GetHistorySnapshot(intermcu_fault_entry_t *out_entries, uint8_t max_count, uint8_t *out_actual_count)

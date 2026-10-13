@@ -34,14 +34,44 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         break;
 
     case MQTT_EVENT_DATA: {
-        ESP_LOGI(TAG, "MQTT Remote Command Received on topic: %.*s", event->topic_len, event->topic);
-        /* If payload contains E-Stop or PWM commands, deserialize and forward to STM32 */
-        if (event->data_len > 0) {
+        ESP_LOGI(TAG, "MQTT Remote Command Received on topic: %.*s (Length: %d bytes)",
+                 event->topic_len, event->topic, event->data_len);
+        
+        /* Safe length-bounded buffer copy preventing buffer over-read (AUD-002) */
+        char cmd_buf[128];
+        if (event->data_len > 0 && event->data_len < (int)sizeof(cmd_buf)) {
+            memcpy(cmd_buf, event->data, event->data_len);
+            cmd_buf[event->data_len] = '\0';
+
+            /* Command Authorization & Authenticity Validation (AUD-003) */
+            /* In production industrial telematics: Require shared authentication token */
+            const char *AUTH_TOKEN = "TOKEN:SEC_EDGE_8820";
+            if (strstr(cmd_buf, AUTH_TOKEN) == NULL) {
+                ESP_LOGE(TAG, "Security Alert: Unauthorized MQTT command attempt rejected (Missing valid token)");
+                break;
+            }
+
             intermcu_actuator_cmd_t cmd;
             memset(&cmd, 0, sizeof(cmd));
-            if (strstr(event->data, "ESTOP")) {
-                cmd.command_id = 0x03; /* Soft E-Stop */
+
+            if (strstr(cmd_buf, "CMD:ESTOP")) {
+                cmd.command_id = 0x03; /* Hardware E-Stop */
+                ESP_LOGW(TAG, "Authorized Remote Emergency Stop triggered via MQTT");
                 InterMcuBridge_SendCommand(&cmd);
+            } else if (strstr(cmd_buf, "CMD:RESET_FAULTS")) {
+                cmd.command_id = 0x04; /* Fault reset */
+                ESP_LOGI(TAG, "Authorized Fault Reset triggered via MQTT");
+                InterMcuBridge_SendCommand(&cmd);
+            } else if (strstr(cmd_buf, "CMD:SET_PWM")) {
+                char *pwm_val = strstr(cmd_buf, "VAL:");
+                if (pwm_val) {
+                    int duty = atoi(pwm_val + 4);
+                    if (duty >= 0 && duty <= 1000) {
+                        cmd.command_id = 0x01;
+                        cmd.pwm_duty_permille = (uint16_t)duty;
+                        InterMcuBridge_SendCommand(&cmd);
+                    }
+                }
             }
         }
         break;

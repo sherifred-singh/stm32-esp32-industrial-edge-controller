@@ -20,6 +20,7 @@ static const char *TAG = "BLE_GATT_SERVER";
 static uint16_t telemetry_char_handle = 0;
 static uint16_t conn_id = 0;
 static bool is_connected = false;
+static bool is_notify_subscribed = false;
 static esp_gatt_if_t gatts_if_saved = 0;
 
 /* GATT Profile Application ID */
@@ -111,23 +112,61 @@ static void gatts_profile_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_
     case ESP_GATTS_CONNECT_EVT:
         conn_id = param->connect.conn_id;
         is_connected = true;
+        is_notify_subscribed = false;
         ESP_LOGI(TAG, "BLE Central Connected (conn_id=%d)", conn_id);
         break;
 
     case ESP_GATTS_DISCONNECT_EVT:
         is_connected = false;
+        is_notify_subscribed = false;
         ESP_LOGI(TAG, "BLE Central Disconnected. Restarting advertising...");
         esp_ble_gap_start_advertising(&adv_params);
         break;
 
-    case ESP_GATTS_WRITE_EVT:
-        if (param->write.len == sizeof(intermcu_actuator_cmd_t)) {
+    case ESP_GATTS_WRITE_EVT: {
+        esp_gatt_status_t status = ESP_GATT_OK;
+
+        /* Check if write is targeting Client Characteristic Configuration Descriptor (CCCD) */
+        if (param->write.handle == (telemetry_char_handle + 1) && param->write.len == 2) {
+            uint16_t descr_value = (uint16_t)(param->write.value[1] << 8 | param->write.value[0]);
+            if (descr_value == 0x0001) {
+                is_notify_subscribed = true;
+                ESP_LOGI(TAG, "BLE Central subscribed to 10 Hz Telemetry Notifications (CCCD=0x0001)");
+            } else if (descr_value == 0x0000) {
+                is_notify_subscribed = false;
+                ESP_LOGI(TAG, "BLE Central unsubscribed from Telemetry Notifications (CCCD=0x0000)");
+            }
+        } 
+        /* Command Characteristic Write */
+        else if (param->write.len == sizeof(intermcu_actuator_cmd_t)) {
             intermcu_actuator_cmd_t cmd;
             memcpy(&cmd, param->write.value, sizeof(cmd));
-            ESP_LOGI(TAG, "BLE Command Received! Routing to STM32...");
-            InterMcuBridge_SendCommand(&cmd);
+
+            /* Semantic range validation (AUD-006) */
+            if (cmd.command_id < 0x01 || cmd.command_id > 0x04 ||
+                cmd.pwm_duty_permille > 1000 || cmd.relay_mask > 0x03) {
+                ESP_LOGE(TAG, "Invalid BLE actuator command parameters rejected (Cmd=%d, PWM=%d, Relays=%d)",
+                         cmd.command_id, cmd.pwm_duty_permille, cmd.relay_mask);
+                status = ESP_GATT_INVALID_ATTR_LEN;
+            } else {
+                esp_err_t err = InterMcuBridge_SendCommand(&cmd);
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to route BLE command down to STM32 (err=%d)", err);
+                    status = ESP_GATT_INTERNAL_ERROR;
+                } else {
+                    ESP_LOGI(TAG, "BLE Actuator Command verified and forwarded to STM32 (Cmd=0x%02X)", cmd.command_id);
+                }
+            }
+        } else {
+            status = ESP_GATT_INVALID_ATTR_LEN;
+        }
+
+        /* Send write response if requested by client */
+        if (param->write.need_rsp) {
+            esp_ble_gatts_send_response(gatts_if, param->write.conn_id, param->write.trans_id, status, NULL);
         }
         break;
+    }
 
     default:
         break;
@@ -162,9 +201,12 @@ esp_err_t BleGattServer_Init(void)
 
 void BleGattServer_NotifyTelemetry(const intermcu_telemetry_payload_t *telemetry)
 {
-    if (is_connected && telemetry_char_handle != 0) {
-        esp_ble_gatts_send_indicate(gatts_if_saved, conn_id, telemetry_char_handle,
-                                    sizeof(intermcu_telemetry_payload_t),
-                                    (uint8_t *)telemetry, false);
+    if (is_connected && is_notify_subscribed && telemetry_char_handle != 0) {
+        esp_err_t err = esp_ble_gatts_send_indicate(gatts_if_saved, conn_id, telemetry_char_handle,
+                                                    sizeof(intermcu_telemetry_payload_t),
+                                                    (uint8_t *)telemetry, false);
+        if (err != ESP_OK) {
+            ESP_LOGD(TAG, "BLE notification indicate skipped or congested (err=%d)", err);
+        }
     }
 }

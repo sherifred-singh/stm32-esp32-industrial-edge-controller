@@ -26,13 +26,36 @@ void ActuatorControl_Init(void)
     configASSERT(xCommandQueue != NULL);
 }
 
+/* Low-Level Hardware Control for TIM1 PWM & GPIOB Relays */
+#if defined(STM32F446xx) || defined(__arm__) || defined(__ARM_ARCH)
+#include "stm32f4xx.h"
+#define HW_ACTUATOR_ESTOP() do { \
+    TIM1->CCR1 = 0; \
+    TIM1->BDTR &= ~TIM_BDTR_MOE; /* Kill PWM via Main Output Enable gate */ \
+    GPIOB->BSRR = ((uint32_t)GPIO_PIN_0 | (uint32_t)GPIO_PIN_1) << 16; /* De-energize relays */ \
+} while(0)
+#define HW_ACTUATOR_SET_PWM(duty) do { \
+    TIM1->CCR1 = (uint32_t)((TIM1->ARR * (duty)) / 1000); \
+    TIM1->BDTR |= TIM_BDTR_MOE; \
+} while(0)
+#define HW_ACTUATOR_SET_RELAYS(mask) do { \
+    if ((mask) & 0x01) GPIOB->BSRR = GPIO_PIN_0; else GPIOB->BSRR = (uint32_t)GPIO_PIN_0 << 16; \
+    if ((mask) & 0x02) GPIOB->BSRR = GPIO_PIN_1; else GPIOB->BSRR = (uint32_t)GPIO_PIN_1 << 16; \
+} while(0)
+#else
+#define HW_ACTUATOR_ESTOP()          do {} while(0)
+#define HW_ACTUATOR_SET_PWM(duty)    do { (void)(duty); } while(0)
+#define HW_ACTUATOR_SET_RELAYS(mask) do { (void)(mask); } while(0)
+#endif
+
 void Actuator_EmergencyStop(void)
 {
     taskENTER_CRITICAL();
     is_estop_active = true;
     current_pwm_duty = 0;
     current_relays = 0;
-    /* Hardware register write: Set PWM compare register CCR1 = 0 and clear relay GPIOs */
+    /* Physical peripheral-safe state execution */
+    HW_ACTUATOR_ESTOP();
     taskEXIT_CRITICAL();
 }
 
@@ -64,11 +87,13 @@ void vActuatorControlTask(void *pvParameters)
             case 0x01: /* Set PWM Speed */
                 if (cmd.pwm_duty_permille <= 1000) {
                     current_pwm_duty = cmd.pwm_duty_permille;
+                    HW_ACTUATOR_SET_PWM(current_pwm_duty);
                 }
                 break;
 
             case 0x02: /* Set Relays */
                 current_relays = (cmd.relay_mask & 0x03);
+                HW_ACTUATOR_SET_RELAYS(current_relays);
                 break;
 
             case 0x03: /* Soft Emergency Stop Trigger */
@@ -79,6 +104,8 @@ void vActuatorControlTask(void *pvParameters)
             case 0x04: /* Reset Faults / Clear E-Stop */
                 taskENTER_CRITICAL();
                 is_estop_active = false;
+                HW_ACTUATOR_SET_PWM(current_pwm_duty);
+                HW_ACTUATOR_SET_RELAYS(current_relays);
                 taskEXIT_CRITICAL();
                 FaultSupervisor_ClearFaults();
                 break;

@@ -137,6 +137,13 @@ typedef struct {
 
 #pragma pack(pop)
 
+/* Compile-Time Size Invariants to Guarantee Cross-Architecture Binary Compatibility (AUD-013) */
+typedef char check_sz_telemetry[(sizeof(intermcu_telemetry_payload_t) == 16) ? 1 : -1];
+typedef char check_sz_actuator [(sizeof(intermcu_actuator_cmd_t) == 5) ? 1 : -1];
+typedef char check_sz_fault    [(sizeof(intermcu_fault_entry_t) == 8) ? 1 : -1];
+typedef char check_sz_heartbeat[(sizeof(intermcu_heartbeat_payload_t) == 6) ? 1 : -1];
+typedef char check_sz_ack      [(sizeof(intermcu_ack_payload_t) == 2) ? 1 : -1];
+
 /* Parser State Machine States */
 typedef enum {
     PARSER_STATE_WAIT_SYNC_1,
