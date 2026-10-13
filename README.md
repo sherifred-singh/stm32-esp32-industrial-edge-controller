@@ -3,6 +3,7 @@
 [![MCU](https://img.shields.io/badge/STM32-F446RE_%28180MHz%29-blue.svg?style=flat-square&logo=stmicroelectronics)](https://www.st.com)
 [![SoC](https://img.shields.io/badge/ESP32--S3-Dual--Core_LX7-red.svg?style=flat-square&logo=espressif)](https://www.espressif.com)
 [![RTOS](https://img.shields.io/badge/RTOS-FreeRTOS_v10.x-green.svg?style=flat-square)](https://www.freertos.org)
+[![CI](https://github.com/sherifred-singh/stm32-esp32-industrial-edge-controller/actions/workflows/ci.yml/badge.svg)](https://github.com/sherifred-singh/stm32-esp32-industrial-edge-controller/actions/workflows/ci.yml)
 [![Wireless](https://img.shields.io/badge/Wireless-BLE_5.0_%7C_Wi--Fi-orange.svg?style=flat-square&logo=bluetooth)](https://bluetooth.com)
 [![Protocol](https://img.shields.io/badge/IPC-UART_DMA_%2B_CRC16-purple.svg?style=flat-square)]()
 [![Cloud](https://img.shields.io/badge/Cloud-MQTT_%28JSON%29-yellow.svg?style=flat-square&logo=mqtt)](https://mqtt.org)
