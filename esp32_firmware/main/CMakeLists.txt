@@ -1,0 +1,19 @@
+idf_component_register(
+    SRCS 
+        "main.c"
+        "intermcu_uart_bridge.c"
+        "ble_gatt_server.c"
+        "wifi_mqtt_gateway.c"
+        "../../common/src/intermcu_protocol.c"
+        "../../common/src/intermcu_crc16.c"
+    INCLUDE_DIRS 
+        "."
+        "../../common/include"
+    REQUIRES 
+        nvs_flash 
+        bt 
+        esp_wifi 
+        mqtt 
+        driver 
+        esp_event
+)

@@ -1,0 +1,23 @@
+# Build outputs
+build/
+*.o
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+*.d
+
+# ESP-IDF
+sdkconfig
+sdkconfig.old
+managed_components/
+
+# Python
+__pycache__/
+*.pyc
+
+# IDEs
+.vscode/
+.idea/
+*.swp
